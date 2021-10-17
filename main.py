@@ -6,11 +6,13 @@ import datetime
 from dataclasses import dataclass
 import re
 import ipaddress
+import mysql.connector
+from datetime import timedelta
 
 
 @dataclass
 class Provide:
-    timeTook: datetime
+    timeTook: float
     timeStarted: datetime
     timeFinished: datetime
     requestID: str
@@ -20,7 +22,7 @@ class Provide:
 class FindProviders:
     timeStarted: datetime
     agentN: int
-    timeTook: datetime
+    timeTook: float
     timeFinished: datetime
     requestID: str
     peersFound: [str]
@@ -38,7 +40,7 @@ class Key:
 @dataclass
 class GetClosestPeersLookup:
     requestID: str  # may be null
-    agentID: str
+    agentN: int
     peerContacted: str
     peerTargeted: str
     nPeersReceived: int
@@ -51,7 +53,7 @@ class Dial:
     connected: bool
     connectionSuccessful: bool  # only if the one before was false
     peerID: str
-    agentID: str
+    agentN: int
     timeTook: float
     connectionsToPeer: [str]
     queryID: str
@@ -62,11 +64,11 @@ class Query:
     requestID: str
     queryID: str
     peerID: str
-    agentID: str
+    agentN: int
     key: str
     timeStarted: datetime
     timeFinished: datetime
-    timeTook: datetime
+    timeTook: float
 
 
 @dataclass
@@ -74,22 +76,22 @@ class GetProviders:
     requestID: str
     messageID: str
     peerID: str
-    agentID: str
+    agentN: int
     key: str
     timeStarted: datetime
     timeFinished: datetime
-    timeTook: datetime
+    timeTook: float
 
 
 @dataclass
 class GetClosestPeers:
     requestID: str
     messageID: str
-    agentID: str
+    agentN: int
     peerTargeted: str
     timeStarted: datetime
     timeFinished: datetime
-    timeTook: datetime
+    timeTook: float
     peerContacted: str
     nPeersReceived: int
 
@@ -121,25 +123,22 @@ getProvs = {}
 keys = [None] * 256
 agentIDs = []
 
+
 def timeTookConvert(t):
     if t.__contains__("h"):
         print("time com horas!!!")
+        print(t)
     elif re.match(r"\d+m\d*", t):  # tem minutos
         # preciso de calcular quantos digitos tem os milisegundos pq o datetime so aceita com 6
         t = t.removesuffix("s")
-        aux = t.split(".")
-        t = t[:(6 - len(aux[2]))]
-        return datetime.datetime.strptime(t, "%-Mm%-S.%f")
+        aux = t.split("m")
+        return timedelta(minutes=aux[0], seconds=float(aux[1])).total_seconds()
     elif re.match(r"\d+.\d*s", t):
         t = t.removesuffix("s")
-        aux = t.split(".")
-        t = t[:(6 - len(aux[2]))]
-        return datetime.datetime.strptime(t, "%-S.%f")
+        return timedelta(seconds=float(t)).total_seconds()
     else:
         t = t.removesuffix("ms")
-        t = t.replace('.', '')
-        t = t[0:6]
-        return datetime.datetime.strptime(t, "%f")
+        return timedelta(milliseconds=float(t)).total_seconds()
 
 
 def timestampConvert(d):
@@ -166,7 +165,7 @@ def process():
                 ind = aux[0].removeprefix("Providing key with index ")
                 aux = aux[1].split(" ID is ")
                 reqID = aux[1]
-                p = Provide(timeTook=None, timeFinished=None, timeStarted=None, requestID=reqID)
+                p = Provide(timeTook=-1, timeFinished=None, timeStarted=None, requestID=reqID)
                 keys[ind].provides[reqID] = p
             elif l.__contains__("Providing value with"):
                 aux = l.split(" of index ")
@@ -201,8 +200,8 @@ def process():
                 aux = aux[1].split(" at time ")
                 k = aux[0]
                 timeStart = timestampConvert(aux[1])
-                currGet = FindProviders(timeTook=None, timeFinished=None, timeStarted=timeStart,
-                                                       requestID=reqID, agentN=count)
+                currGet = FindProviders(timeTook=-1, timeFinished=None, timeStarted=timeStart,
+                                        requestID=reqID, agentN=count)
                 keys[ind].finds[reqID] = currGet
             elif l.__contains__("Successful in finding"):
                 aux = l.split(" of index ")
@@ -227,6 +226,7 @@ def process():
 
     # erros
     for f in errs:
+        curr = 0
         for l in f.readlines():
             if l.__contains__("dial"):
                 d = None
@@ -243,7 +243,7 @@ def process():
                         assert (d.queryID == qID)
                         assert (d.dialID == dID)
                     else:
-                        d = Dial(dialID=dID, requestID=reqID, queryID=qID, agentID="", connected=False,
+                        d = Dial(dialID=dID, requestID=reqID, queryID=qID, agentN=curr, connected=False,
                                  connectionSuccessful=False, peerID="", timeTook=-1,
                                  connectionsToPeer=[])
                         dials[dID] = d
@@ -271,7 +271,7 @@ def process():
                         d = dials[dID]
                         assert (d.dialID == dID)
                     else:
-                        d = Dial(dialID=dID, requestID="", queryID="", agentID="", connected=False,
+                        d = Dial(dialID=dID, requestID="", queryID="", agentN=curr, connected=False,
                                  connectionSuccessful=False, peerID="", timeTook=-1,
                                  connectionsToPeer=[])
                         dials[dID] = d
@@ -308,7 +308,7 @@ def process():
                             assert (q.requestID == reqID)
                             assert (q.queryID == qID)
                         else:
-                            q = Query(requestID=reqID, queryID=qID, agentID="", peerID=peerID, timeTook=-1, key=key,
+                            q = Query(requestID=reqID, queryID=qID, agentN=curr, peerID=peerID, timeTook=-1, key=key,
                                       timeStarted=None, timeFinished=None)
                             queries[qID] = q
                     else:
@@ -322,7 +322,7 @@ def process():
                             assert (q.requestID == reqID)
                             assert (q.queryID == qID)
                         else:
-                            q = Query(requestID=reqID, queryID=qID, agentID="", peerID="", timeTook=-1, key="",
+                            q = Query(requestID=reqID, queryID=qID, agentN=curr, peerID="", timeTook=-1, key="",
                                       timeStarted=None, timeFinished=None)
                             queries[qID] = q
                         if aux[1].__contains__("Started que"):
@@ -346,18 +346,8 @@ def process():
                     aux = aux[1].split(" received ")
                     peerTarget = aux[0]
                     noPeersReceived = int(aux[1])
-                    g = GetClosestPeersLookup(requestID=reqID, agentID="", peerContacted=peerID,
+                    g = GetClosestPeersLookup(requestID=reqID, agentN=curr, peerContacted=peerID,
                                               peerTargeted=peerTarget,
-                                              nPeersReceived=noPeersReceived)
-                    getClosestPeersLookup.append(g)
-                else:
-                    aux = l.split(" to get closest peers to key  ")
-                    peerID = aux[0]
-                    aux = aux[1].split(" peer ID from key is ")
-                    aux = aux[1].split(" received ")
-                    peerTarget = aux[0]
-                    noPeersReceived = int(aux[1])
-                    g = GetClosestPeersLookup(requestID="", agentID="", peerContacted=peerID, peerTargeted=peerTarget,
                                               nPeersReceived=noPeersReceived)
                     getClosestPeersLookup.append(g)
             elif l.__contains__("Sent getClosestPeers"):
@@ -370,9 +360,9 @@ def process():
                 aux = aux[1].split(" message uid is ")
                 reqID = aux[0]
                 mesID = aux[1]
-                g = GetClosestPeers(requestID=reqID, messageID=mesID, agentID=""  # TODO\
-                                    , peerTargeted=peerTarget, timeStarted=timeStart, timeFinished=None, timeTook=None,
-                                    peerContacted=pID, nPeersReceived=-1)
+                g = GetClosestPeers(requestID=reqID, messageID=mesID, agentN=curr, peerTargeted=peerTarget,
+                                    timeStarted=timeStart, timeFinished=None, timeTook=-1, peerContacted=pID,
+                                    nPeersReceived=-1)
                 getClosestPeers[mesID] = g
             elif l.__contains__("Received response to getClosest"):
                 aux = l.split(" took ")
@@ -397,8 +387,8 @@ def process():
                 aux = aux[1].split(" message uid is ")
                 reqID = aux[0]
                 mesID = aux[1]
-                gp = GetProviders(requestID=reqID, messageID=mesID, peerID=pID, agentID="", key=keyTarget,
-                                  timeStarted=timeStart, timeFinished=None, timeTook=None)
+                gp = GetProviders(requestID=reqID, messageID=mesID, peerID=pID, agentN=curr, key=keyTarget,
+                                  timeStarted=timeStart, timeFinished=None, timeTook=-1)
                 getProvs[mesID] = gp
             elif l.__contains__("Received response to getProviders"):
                 aux = l.split(" took ")
@@ -413,9 +403,41 @@ def process():
                 gp.timeFinished = timeFinish
                 gp.timeTook = tTook
                 getProvs[mesID] = gp
+        curr += 1
                 # TODO PutProvider, findProvidersAsyncRoutineMod, runLookupWithFollowUpMod
 
+    mydb = mysql.connector.connect(host="localhost",
+                                   user="root",
+                                   password="neuxland",
+                                   database="measurement211011")
+    mycursor = mydb.cursor()
+    for i in range(0, 4):
+        mycursor.execute("INSERT INTO Agent VALUES (%s, %s)", (i, agentIDs[i]))
+    for k in keys:
+        mycursor.execute("INSERT INTO Key VALUES (%s, %s, %s)", (k.index, k.agentN, k.keyHash))
+        for p in k.provides:
+            mycursor.execute("INSERT INTO Request VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                             (p.requestID, k.agentN, k.index, p.timeStarted, p.timeTook, p.timeFinished, 1, 0))
+            mycursor.execute("INSERT INTO Provide VALUES (%s, %s)",
+                             (p.requestID, k.agentN))
+        for f in k.finds:
+            succ = False
+            n = 0
+            for v in f.peersFound:
+                succ = succ or agentIDs[k.agentN] == v
+                n += 1
+            mycursor.execute("INSERT INTO Request VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                             (f.requestID, k.agentN, k.index, f.timeStarted, f.timeTook, f.timeFinished, succ, 1))
+            mycursor.execute("INSERT INTO Measurement VALUES (%s, %s, %s)",
+                             (p.requestID, k.agentN, n))
+            for pe in f.peersFound:
+                mycursor.execute("INSERT INTO Peer VALUES (%s, %s, %s)",
+                                 (pe, p.requestID, k.agentN))
+    for q in queries.values():
+        mycursor.execute("INSERT INTO Query VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                         ())
 
+    mydb.commit()
 
 
 # Press the green button in the gutter to run the script.
